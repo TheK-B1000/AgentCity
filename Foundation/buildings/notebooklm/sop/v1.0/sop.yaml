@@ -1,0 +1,28 @@
+sop:
+  name: notebooklm_basic_qa
+  version: 1.0
+  intent: "Use NotebookLM to answer a question grounded in provided sources."
+
+job_packet:
+  steps:
+    - "Open NotebookLM."
+    - "Create a new notebook for this trace_id (or reuse the correct one)."
+    - "Import the provided sources (files/links/text)."
+    - "Paste the prompt exactly."
+    - "Return the output in the required JSON format."
+
+prompt_template: |
+  You are NotebookLM. Use ONLY the provided sources.
+  Task: Answer the question with citations.
+  Question: {{question}}
+
+  Requirements:
+  - If you cannot find support in the sources, say so in 'limits'.
+  - Provide citations as 'source' + a locator (page/section/quote).
+
+required_output_json_example:
+  answer: "..."
+  citations:
+    - source: "DocNameA.pdf"
+      locator: "p.3, section 'Overview'"
+  limits: "If any sources are missing or unclear, state it here."

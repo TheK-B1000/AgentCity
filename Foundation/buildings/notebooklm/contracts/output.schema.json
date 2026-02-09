@@ -1,0 +1,36 @@
+{
+    "type": "object",
+    "required": [
+        "answer",
+        "citations"
+    ],
+    "properties": {
+        "answer": {
+            "type": "string",
+            "minLength": 1
+        },
+        "citations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "source",
+                    "locator"
+                ],
+                "properties": {
+                    "source": {
+                        "type": "string"
+                    },
+                    "locator": {
+                        "type": "string"
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "limits": {
+            "type": "string"
+        }
+    },
+    "additionalProperties": false
+}
