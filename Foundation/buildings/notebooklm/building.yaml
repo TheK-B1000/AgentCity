@@ -1,0 +1,25 @@
+building:
+  name: notebooklm
+  version: 0.1.0
+  owner: verseridge
+  purpose: "Source-grounded summarization and Q&A over provided documents."
+  risk_tier: tier0
+
+interface:
+  entrypoint: tool.notebooklm.run
+
+requirements:
+  sop:
+    required: true
+    path: "buildings/notebooklm/sop/v1.0/sop.yaml"
+  contracts:
+    input: "buildings/notebooklm/contracts/input.schema.json"
+    output: "buildings/notebooklm/contracts/output.schema.json"
+
+governance:
+  least_agency: true
+  allowed_data_zones:
+    - source_vault
+    - state_store
+  allowed_tools:
+    - tool.notebooklm.run

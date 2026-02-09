@@ -1,0 +1,23 @@
+city:
+  name: antigravity
+  version: 0.1.0
+
+environment: dev
+
+defaults:
+  budgets:
+    max_steps: 25
+    max_tool_calls: 10
+    timeout_seconds: 120
+
+governance:
+  policy_mode: strict_allowlist
+  least_agency: true
+
+observability:
+  traces_dir: "data/traces"
+  format: "jsonl"
+  event_schema: "schemas/run_event.schema.json"
+
+registry:
+  path: "data/registry/registry.json"

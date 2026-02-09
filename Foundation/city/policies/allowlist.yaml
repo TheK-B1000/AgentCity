@@ -1,0 +1,18 @@
+env:
+  dev:
+    buildings:
+      - notebooklm
+    tools:
+      - tool.notebooklm.run
+
+  staging:
+    buildings:
+      - notebooklm
+    tools:
+      - tool.notebooklm.run
+
+  prod:
+    buildings:
+      - notebooklm
+    tools:
+      - tool.notebooklm.run

@@ -1,0 +1,154 @@
+{
+    "type": "object",
+    "required": [
+        "event_version",
+        "trace_id",
+        "timestamp_utc",
+        "event_type",
+        "agent",
+        "run",
+        "step",
+        "errors"
+    ],
+    "properties": {
+        "event_version": {
+            "type": "string"
+        },
+        "trace_id": {
+            "type": "string",
+            "minLength": 8
+        },
+        "timestamp_utc": {
+            "type": "string"
+        },
+        "event_type": {
+            "type": "string",
+            "enum": [
+                "step_start",
+                "step_end",
+                "tool_call",
+                "error",
+                "run_start",
+                "run_end"
+            ]
+        },
+        "agent": {
+            "type": "object",
+            "required": [
+                "name",
+                "version"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": true
+        },
+        "run": {
+            "type": "object",
+            "required": [
+                "run_id",
+                "workflow",
+                "environment"
+            ],
+            "properties": {
+                "run_id": {
+                    "type": "string"
+                },
+                "workflow": {
+                    "type": "string"
+                },
+                "environment": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": true
+        },
+        "step": {
+            "type": "object",
+            "required": [
+                "step_index",
+                "step_type",
+                "status",
+                "inputs_summary",
+                "outputs_summary"
+            ],
+            "properties": {
+                "step_index": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "step_type": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "started",
+                        "succeeded",
+                        "failed",
+                        "skipped"
+                    ]
+                },
+                "inputs_summary": {
+                    "type": "string"
+                },
+                "outputs_summary": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": true
+        },
+        "errors": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "code",
+                    "message"
+                ],
+                "properties": {
+                    "code": {
+                        "type": "string"
+                    },
+                    "message": {
+                        "type": "string"
+                    },
+                    "details": {}
+                },
+                "additionalProperties": true
+            }
+        },
+        "span_id": {
+            "type": "string"
+        },
+        "parent_span_id": {
+            "type": "string"
+        },
+        "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "tool": {
+            "type": "object",
+            "additionalProperties": true
+        },
+        "security": {
+            "type": "object",
+            "additionalProperties": true
+        },
+        "links": {
+            "type": "object",
+            "additionalProperties": true
+        },
+        "metrics": {
+            "type": "object",
+            "additionalProperties": true
+        }
+    },
+    "additionalProperties": true
+}
