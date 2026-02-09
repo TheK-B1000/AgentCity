@@ -133,11 +133,11 @@ async function main(): Promise<void> {
         case "promote": {
             const building = args[1];
             const version = args[2];
-            const stage = args[3] as Stage;
+            const stage = (getFlag(args, "--env") ?? args[3]) as Stage;
             const force = hasFlag(args, "--force");
 
             if (!building || !version || !stage) {
-                console.error("Usage: ag promote <building> <version> <stage> [--force]");
+                console.error("Usage: ag promote <building> <version> --env <stage> [--force]");
                 process.exit(1);
             }
 
@@ -147,10 +147,10 @@ async function main(): Promise<void> {
 
         case "rollback": {
             const building = args[1];
-            const stage = args[2] as Stage;
+            const stage = (getFlag(args, "--env") ?? args[2]) as Stage;
 
             if (!building || !stage) {
-                console.error("Usage: ag rollback <building> <stage>");
+                console.error("Usage: ag rollback <building> --env <stage>");
                 process.exit(1);
             }
 
@@ -160,10 +160,10 @@ async function main(): Promise<void> {
 
         case "resolve": {
             const building = args[1];
-            const stage = args[2] as Stage | undefined;
+            const stage = (getFlag(args, "--env") ?? args[2]) as Stage | undefined;
 
             if (!building) {
-                console.error("Usage: ag resolve <building> [stage]");
+                console.error("Usage: ag resolve <building> [--env <stage>]");
                 process.exit(1);
             }
 

@@ -1,0 +1,31 @@
+workflow:
+  name: citations_audit
+  version: "1.0"
+  description: "Verify that claims in a research output are properly grounded in sources."
+
+steps:
+  - step_type: step_start
+    name: start
+
+  - step_type: tool_call
+    name: audit_claims
+    tool: tool.notebooklm.run
+    building: notebooklm
+    input_contract: buildings/notebooklm/contracts/input.schema.json
+    output_contract: buildings/notebooklm/contracts/output.schema.json
+    sop_path: buildings/notebooklm/sop/v1.0/sop.yaml
+
+  - step_type: verify
+    name: verify_grounding
+    checks:
+      - type: output_schema
+        contract: buildings/notebooklm/contracts/output.schema.json
+      - type: citations_present
+        min_citations: 1
+
+  - step_type: report
+    name: audit_report
+    output: audit
+
+  - step_type: step_end
+    name: end

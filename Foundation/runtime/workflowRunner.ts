@@ -247,9 +247,10 @@ async function handleToolCall(
     if (!step.tool) throw new Error(`Step "${step.name}" is tool_call but has no "tool" field.`);
     if (!step.building) throw new Error(`Step "${step.name}" has no "building" field.`);
 
-    // Verify building is registered and resolved
-    const resolved = resolveVersion(foundationRoot, step.building);
-    console.log(`     ├─ Resolved ${step.building}@${resolved.version}`);
+    // Resolve building by environment stage pointer (not hardcoded)
+    const envStage = cityConfig.environment as "dev" | "staging" | "prod";
+    const resolved = resolveVersion(foundationRoot, step.building, envStage);
+    console.log(`     ├─ Resolved ${step.building}@${resolved.version} (stage: ${envStage})`);
 
     // Load SOP for context
     if (step.sop_path) {
