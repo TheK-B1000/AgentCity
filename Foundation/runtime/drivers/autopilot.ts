@@ -14,7 +14,7 @@
  * In v2+, this will invoke the full browser-based notebook-booster skill.
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { Driver, ToolInput, ToolOutput, DriverContext } from "./index.js";
@@ -80,7 +80,26 @@ export const autopilotDriver: Driver = {
         // ── 4. Store output artifact ─────────────────────────────────────────
         writeFileSync(resolve(artifactsDir, "output.json"), JSON.stringify(output, null, 2) + "\n", "utf-8");
 
+        // ── 5. Copy external briefs (immutable snapshots) ────────────────────
+        // External files live in VerseRidge Corporate/.agent/docs/.
+        // We COPY them into the trace folder so the run is immutable
+        // (external files can change later; the copy preserves the state-at-run).
+        const externalLinks = copyExternalBriefs(ctx, artifactsDir);
+
+        // ── 6. Write notebooklm_metadata.json with links.* pointers ─────────
+        const metadata = {
+            driver: "autopilot",
+            sop: sop.sop.name,
+            sop_version: sop.sop.version,
+            question: input.question,
+            sources: input.sources,
+            timestamp_utc: new Date().toISOString(),
+            links: externalLinks,
+        };
+        writeFileSync(resolve(artifactsDir, "notebooklm_metadata.json"), JSON.stringify(metadata, null, 2) + "\n", "utf-8");
+
         console.log(`     ├─ ✓ Output: answer=${output.answer.length} chars, ${output.citations.length} citations`);
+        console.log(`     ├─ 📋 Metadata: notebooklm_metadata.json (${Object.keys(externalLinks).length} links)`);
         console.log(`     ├─ 📁 Artifacts: ${artifactsDir}`);
 
         return output;
@@ -126,4 +145,63 @@ function generateStructuredOutput(input: ToolInput, renderedPrompt: string): Too
         ],
         limits: "Generated autonomously by autopilot driver (v1 fallback). For fully grounded analysis, invoke the complete notebook-booster browser pipeline.",
     };
+}
+
+// ── External Brief Copier ──────────────────────────────────────────────
+
+interface ExternalLinks {
+    context_brief_json_path: string | null;
+    context_brief_md_path: string | null;
+    [key: string]: string | null;
+}
+
+/**
+ * Copy external briefs from VerseRidge Corporate/.agent/docs/ into
+ * the trace artifacts folder. This makes the run immutable —
+ * external files can change later, but the snapshot is preserved.
+ *
+ * Returns a links.* map for notebooklm_metadata.json.
+ */
+function copyExternalBriefs(ctx: DriverContext, artifactsDir: string): ExternalLinks {
+    const docsRoot = resolve(ctx.foundationRoot, "..", "VerseRidge Corporate", ".agent", "docs");
+    const externalDir = resolve(artifactsDir, "external_records");
+    mkdirSync(externalDir, { recursive: true });
+
+    const links: ExternalLinks = {
+        context_brief_json_path: null,
+        context_brief_md_path: null,
+    };
+
+    // ── context_brief.json (canonical structured output from notebook-booster)
+    const jsonPath = resolve(docsRoot, "context_brief.json");
+    if (existsSync(jsonPath)) {
+        const dest = resolve(externalDir, "context_brief.json");
+        copyFileSync(jsonPath, dest);
+        links.context_brief_json_path = "artifacts/external_records/context_brief.json";
+        console.log(`     ├─ 📥 Copied context_brief.json (immutable snapshot)`);
+    }
+
+    // ── context_brief.md (human-readable brief from notebook-booster)
+    const mdPath = resolve(docsRoot, "context_brief.md");
+    if (existsSync(mdPath)) {
+        const dest = resolve(externalDir, "context_brief.md");
+        copyFileSync(mdPath, dest);
+        links.context_brief_md_path = "artifacts/external_records/context_brief.md";
+        console.log(`     ├─ 📥 Copied context_brief.md (immutable snapshot)`);
+    }
+
+    // ── Scan for any other .md briefs in the docs directory
+    const knownBriefs = ["ultimate_agent_brief.md", "master_agentic_context.md"];
+    for (const briefName of knownBriefs) {
+        const briefPath = resolve(docsRoot, briefName);
+        if (existsSync(briefPath)) {
+            const dest = resolve(externalDir, briefName);
+            copyFileSync(briefPath, dest);
+            const linkKey = `${briefName.replace(/\./g, "_").replace(/_md$/, "")}_path`;
+            links[linkKey] = `artifacts/external_records/${briefName}`;
+            console.log(`     ├─ 📥 Copied ${briefName} (immutable snapshot)`);
+        }
+    }
+
+    return links;
 }

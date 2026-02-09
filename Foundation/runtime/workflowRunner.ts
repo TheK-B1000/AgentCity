@@ -6,7 +6,7 @@
  * Stores artifacts under data/traces/YYYY-MM-DD/<traceId>/.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import _Ajv from "ajv";
@@ -387,8 +387,23 @@ async function handleReport(
     const summaryPath = resolve(foundationRoot, "data", "traces", traceDate, `${traceId}.summary.md`);
     writeFileSync(summaryPath, summaryMd, "utf-8");
 
+    // ── Copy external records into trace (immutable snapshots) ────────
+    const externalLinks = copyExternalRecords(foundationRoot, artifactsDir);
+
+    // ── Write notebooklm_metadata.json with links.* pointers ─────────
+    const metadataPath = resolve(artifactsDir, "notebooklm_metadata.json");
+    const metadata = {
+        trace_id: traceId,
+        trace_date: traceDate,
+        step: step.name,
+        timestamp_utc: new Date().toISOString(),
+        links: externalLinks,
+    };
+    writeFileSync(metadataPath, JSON.stringify(metadata, null, 2) + "\n", "utf-8");
+
     console.log(`     ├─ 📁 Artifact: ${artifactsDir}/output.json`);
     console.log(`     ├─ 📝 Summary: ${summaryPath}`);
+    console.log(`     ├─ 📋 Metadata: notebooklm_metadata.json (${Object.keys(externalLinks).filter((k) => externalLinks[k] !== null).length} links)`);
 
     trace.emit(buildEvent(trace.traceId, runInfo, agent, "step_end", {
         step_index: index,
@@ -399,4 +414,48 @@ async function handleReport(
     }));
 
     console.log(`     └─ Report recorded: ${summary}`);
+}
+
+// ── External Records Copier ────────────────────────────────────────────
+
+interface ExternalLinkMap {
+    context_brief_json_path: string | null;
+    context_brief_md_path: string | null;
+    [key: string]: string | null;
+}
+
+/**
+ * Copy known external briefs from VerseRidge Corporate/.agent/docs/ into
+ * the trace artifacts folder. External files can change later — the copy
+ * makes the run immutable.
+ */
+function copyExternalRecords(foundationRoot: string, artifactsDir: string): ExternalLinkMap {
+    const docsRoot = resolve(foundationRoot, "..", "VerseRidge Corporate", ".agent", "docs");
+    const externalDir = resolve(artifactsDir, "external_records");
+    mkdirSync(externalDir, { recursive: true });
+
+    const links: ExternalLinkMap = {
+        context_brief_json_path: null,
+        context_brief_md_path: null,
+    };
+
+    // Known external files to snapshot
+    const filesToCopy: Array<{ file: string; linkKey: string }> = [
+        { file: "context_brief.json", linkKey: "context_brief_json_path" },
+        { file: "context_brief.md", linkKey: "context_brief_md_path" },
+        { file: "ultimate_agent_brief.md", linkKey: "ultimate_agent_brief_path" },
+        { file: "master_agentic_context.md", linkKey: "master_agentic_context_path" },
+    ];
+
+    for (const { file, linkKey } of filesToCopy) {
+        const srcPath = resolve(docsRoot, file);
+        if (existsSync(srcPath)) {
+            const dest = resolve(externalDir, file);
+            copyFileSync(srcPath, dest);
+            links[linkKey] = `artifacts/external_records/${file}`;
+            console.log(`     ├─ 📥 Copied ${file} (immutable snapshot)`);
+        }
+    }
+
+    return links;
 }

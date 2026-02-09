@@ -21,3 +21,18 @@ observability:
 
 registry:
   path: "data/registry/registry.json"
+
+# ── External Records District ────────────────────────────────────────
+# Files that live outside Foundation/ but are governed by the city.
+# copy_on_run: true  →  files are COPIED into trace artifacts at run end
+#                       (makes each run immutable; external files can change later)
+external_records:
+  policy: copy_on_run
+  districts:
+    - name: verseridge_agent_docs
+      description: "NotebookLM briefs and research artifacts from VerseRidge Corporate"
+      path: "../VerseRidge Corporate/.agent/docs"
+      known_files:
+        - context_brief.json
+        - context_brief.md
+        - ultimate_agent_brief.md
