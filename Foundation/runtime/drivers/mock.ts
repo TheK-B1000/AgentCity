@@ -33,6 +33,10 @@ export const mockDriver: Driver = {
                 },
             ],
             limits: "This is a deterministic mock response — no actual source analysis was performed.",
+            _driverMeta: {
+                driver: "mock",
+                notebook: { title: "mock_notebook", id: null },
+            },
         };
     },
 };

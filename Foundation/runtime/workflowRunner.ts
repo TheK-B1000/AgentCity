@@ -66,6 +66,13 @@ export interface RunResult {
     errors: Array<{ code: string; message: string }>;
 }
 
+/** Internal container so handleReport gets both tool output and building info. */
+interface RunOutput {
+    toolOutput: unknown;
+    building?: string;
+    buildingVersion?: string;
+}
+
 // ── Public API ─────────────────────────────────────────────────────────
 
 /**
@@ -100,7 +107,7 @@ export async function runWorkflow(
     };
 
     const errors: Array<{ code: string; message: string }> = [];
-    let output: unknown = null;
+    let runOutput: RunOutput = { toolOutput: null };
     let stepsExecuted = 0;
 
     // Reset tool call budgets
@@ -140,13 +147,13 @@ export async function runWorkflow(
                     await handleStepStart(i, step, trace, runInfo, agent);
                     break;
                 case "tool_call":
-                    output = await handleToolCall(i, step, trace, runInfo, agent, foundationRoot, cityConfig, options, traceDate);
+                    runOutput = await handleToolCall(i, step, trace, runInfo, agent, foundationRoot, cityConfig, options, traceDate);
                     break;
                 case "verify":
-                    await handleVerify(i, step, trace, runInfo, agent, foundationRoot, output);
+                    await handleVerify(i, step, trace, runInfo, agent, foundationRoot, runOutput.toolOutput);
                     break;
                 case "report":
-                    await handleReport(i, step, trace, runInfo, agent, output, foundationRoot, trace.traceId, traceDate);
+                    await handleReport(i, step, trace, runInfo, agent, runOutput, foundationRoot, trace.traceId, traceDate, options);
                     break;
                 case "step_end":
                     await handleStepEnd(i, step, trace, runInfo, agent);
@@ -200,7 +207,7 @@ export async function runWorkflow(
         traceFile: trace.filePath,
         traceId: trace.traceId,
         runId: trace.runId,
-        output,
+        output: runOutput.toolOutput,
         stepsExecuted,
         errors,
     };
@@ -241,7 +248,7 @@ async function handleToolCall(
     trace: TraceHandle, runInfo: RunInfo, agent: AgentInfo,
     foundationRoot: string, cityConfig: CityConfig,
     options: RunOptions, traceDate: string,
-): Promise<unknown> {
+): Promise<RunOutput> {
     console.log(`   → [${index}] tool_call: ${step.name} → ${step.tool}`);
 
     if (!step.tool) throw new Error(`Step "${step.name}" is tool_call but has no "tool" field.`);
@@ -287,7 +294,12 @@ async function handleToolCall(
 
     const result = await callTool(step.tool, toolInput, gatewayCtx);
     console.log(`     └─ Tool call succeeded`);
-    return result;
+
+    return {
+        toolOutput: result,
+        building: step.building,
+        buildingVersion: resolved.version,
+    };
 }
 
 async function handleVerify(
@@ -342,11 +354,13 @@ async function handleVerify(
 async function handleReport(
     index: number, step: WorkflowStep,
     trace: TraceHandle, runInfo: RunInfo, agent: AgentInfo,
-    output: unknown,
+    runOutput: RunOutput,
     foundationRoot: string, traceId: string, traceDate: string,
+    options: RunOptions,
 ): Promise<void> {
     console.log(`   → [${index}] report: ${step.name}`);
 
+    const output = runOutput.toolOutput;
     const summary = output
         ? `output_keys=${Object.keys(output as Record<string, unknown>).join(",")}`
         : "no output";
@@ -355,10 +369,12 @@ async function handleReport(
     const artifactsDir = resolve(foundationRoot, "data", "traces", traceDate, traceId, "artifacts");
     mkdirSync(artifactsDir, { recursive: true });
 
-    // output.json
+    // output.json (strip _driverMeta — it's in-memory only)
+    const persistOutput = { ...(output as Record<string, unknown>) };
+    delete persistOutput._driverMeta;
     writeFileSync(
         resolve(artifactsDir, "output.json"),
-        JSON.stringify(output, null, 2) + "\n",
+        JSON.stringify(persistOutput, null, 2) + "\n",
         "utf-8",
     );
 
@@ -387,23 +403,33 @@ async function handleReport(
     const summaryPath = resolve(foundationRoot, "data", "traces", traceDate, `${traceId}.summary.md`);
     writeFileSync(summaryPath, summaryMd, "utf-8");
 
-    // ── Copy external records into trace (immutable snapshots) ────────
-    const externalLinks = copyExternalRecords(foundationRoot, artifactsDir);
+    // ── Copy external records (immutable snapshots) ───────────────────
+    const externalRecords = copyAndSnapshotExternalRecords(foundationRoot, artifactsDir);
 
-    // ── Write notebooklm_metadata.json with links.* pointers ─────────
-    const metadataPath = resolve(artifactsDir, "notebooklm_metadata.json");
-    const metadata = {
-        trace_id: traceId,
-        trace_date: traceDate,
-        step: step.name,
-        timestamp_utc: new Date().toISOString(),
-        links: externalLinks,
+    // ── Write SINGLE CANONICAL notebooklm_metadata.json ──────────────
+    // One file. One truth. Merges driver meta + external records + links.
+    const driverMeta = (typedOutput as Record<string, unknown> | null)?._driverMeta as Record<string, unknown> | undefined;
+
+    const canonicalMetadata = {
+        building: runOutput.building ?? "notebooklm",
+        building_version: runOutput.buildingVersion ?? "unknown",
+        driver: driverMeta?.driver ?? options.driver ?? "mock",
+        notebook: driverMeta?.notebook ?? { title: null, id: null },
+        external_records: externalRecords,
+        links: {
+            output_json: "artifacts/output.json",
+            trace_jsonl: `../${traceId}.jsonl`,
+            summary_md: `../${traceId}.summary.md`,
+        },
     };
-    writeFileSync(metadataPath, JSON.stringify(metadata, null, 2) + "\n", "utf-8");
 
+    const metadataPath = resolve(artifactsDir, "notebooklm_metadata.json");
+    writeFileSync(metadataPath, JSON.stringify(canonicalMetadata, null, 2) + "\n", "utf-8");
+
+    const foundCount = Object.values(externalRecords).filter((v) => typeof v === "string").length;
     console.log(`     ├─ 📁 Artifact: ${artifactsDir}/output.json`);
     console.log(`     ├─ 📝 Summary: ${summaryPath}`);
-    console.log(`     ├─ 📋 Metadata: notebooklm_metadata.json (${Object.keys(externalLinks).filter((k) => externalLinks[k] !== null).length} links)`);
+    console.log(`     ├─ 📋 Metadata (canonical): notebooklm_metadata.json (${foundCount} external records)`);
 
     trace.emit(buildEvent(trace.traceId, runInfo, agent, "step_end", {
         step_index: index,
@@ -418,44 +444,79 @@ async function handleReport(
 
 // ── External Records Copier ────────────────────────────────────────────
 
-interface ExternalLinkMap {
-    context_brief_json_path: string | null;
-    context_brief_md_path: string | null;
-    [key: string]: string | null;
+/** Present files → path string. Missing files → structured reason. */
+type ExternalRecordEntry = string | {
+    path: null;
+    status: "missing";
+    expected_from: string;
+    note: string;
+};
+
+interface KnownFile {
+    file: string;
+    key: string;
+    expected_from: string;
+    note_if_missing: string;
 }
 
 /**
- * Copy known external briefs from VerseRidge Corporate/.agent/docs/ into
- * the trace artifacts folder. External files can change later — the copy
- * makes the run immutable.
+ * Copy known external briefs into trace artifacts. External files can change
+ * later — the copy makes the run immutable. Missing files get structured null
+ * so old traces are self-documenting.
  */
-function copyExternalRecords(foundationRoot: string, artifactsDir: string): ExternalLinkMap {
+function copyAndSnapshotExternalRecords(
+    foundationRoot: string,
+    artifactsDir: string,
+): Record<string, ExternalRecordEntry> {
     const docsRoot = resolve(foundationRoot, "..", "VerseRidge Corporate", ".agent", "docs");
     const externalDir = resolve(artifactsDir, "external_records");
     mkdirSync(externalDir, { recursive: true });
 
-    const links: ExternalLinkMap = {
-        context_brief_json_path: null,
-        context_brief_md_path: null,
-    };
-
-    // Known external files to snapshot
-    const filesToCopy: Array<{ file: string; linkKey: string }> = [
-        { file: "context_brief.json", linkKey: "context_brief_json_path" },
-        { file: "context_brief.md", linkKey: "context_brief_md_path" },
-        { file: "ultimate_agent_brief.md", linkKey: "ultimate_agent_brief_path" },
-        { file: "master_agentic_context.md", linkKey: "master_agentic_context_path" },
+    const knownFiles: KnownFile[] = [
+        {
+            file: "context_brief.json",
+            key: "context_brief_json",
+            expected_from: "notebook-booster",
+            note_if_missing: "notebook-booster has not produced context_brief.json yet",
+        },
+        {
+            file: "context_brief.md",
+            key: "context_brief_md",
+            expected_from: "notebook-booster",
+            note_if_missing: "notebook-booster has not produced context_brief.md yet",
+        },
+        {
+            file: "ultimate_agent_brief.md",
+            key: "ultimate_agent_brief",
+            expected_from: "agent docs",
+            note_if_missing: "VerseRidge Corporate/.agent/docs/ultimate_agent_brief.md not found",
+        },
+        {
+            file: "master_agentic_context.md",
+            key: "master_agentic_context",
+            expected_from: "agent docs",
+            note_if_missing: "VerseRidge Corporate/.agent/docs/master_agentic_context.md not found",
+        },
     ];
 
-    for (const { file, linkKey } of filesToCopy) {
+    const records: Record<string, ExternalRecordEntry> = {};
+
+    for (const { file, key, expected_from, note_if_missing } of knownFiles) {
         const srcPath = resolve(docsRoot, file);
         if (existsSync(srcPath)) {
             const dest = resolve(externalDir, file);
             copyFileSync(srcPath, dest);
-            links[linkKey] = `artifacts/external_records/${file}`;
+            records[key] = `artifacts/external_records/${file}`;
             console.log(`     ├─ 📥 Copied ${file} (immutable snapshot)`);
+        } else {
+            records[key] = {
+                path: null,
+                status: "missing",
+                expected_from,
+                note: note_if_missing,
+            };
         }
     }
 
-    return links;
+    return records;
 }

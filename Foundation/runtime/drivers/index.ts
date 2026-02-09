@@ -22,6 +22,19 @@ export interface ToolOutput {
     answer: string;
     citations: Array<{ source: string; locator: string }>;
     limits?: string;
+    /** In-memory only — drivers attach metadata here; handleReport writes the canonical file */
+    _driverMeta?: DriverMeta;
+}
+
+export interface DriverMeta {
+    driver: string;
+    sop?: string;
+    sop_version?: number;
+    notebook?: {
+        title: string;
+        id: string | null;
+    };
+    [key: string]: unknown;
 }
 
 export interface DriverContext {

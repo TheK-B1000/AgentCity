@@ -80,26 +80,18 @@ export const autopilotDriver: Driver = {
         // ── 4. Store output artifact ─────────────────────────────────────────
         writeFileSync(resolve(artifactsDir, "output.json"), JSON.stringify(output, null, 2) + "\n", "utf-8");
 
-        // ── 5. Copy external briefs (immutable snapshots) ────────────────────
-        // External files live in VerseRidge Corporate/.agent/docs/.
-        // We COPY them into the trace folder so the run is immutable
-        // (external files can change later; the copy preserves the state-at-run).
-        const externalLinks = copyExternalBriefs(ctx, artifactsDir);
-
-        // ── 6. Write notebooklm_metadata.json with links.* pointers ─────────
-        const metadata = {
+        // ── 5. Attach metadata in-memory (handleReport writes the canonical file) ──
+        output._driverMeta = {
             driver: "autopilot",
             sop: sop.sop.name,
             sop_version: sop.sop.version,
-            question: input.question,
-            sources: input.sources,
-            timestamp_utc: new Date().toISOString(),
-            links: externalLinks,
+            notebook: {
+                title: `trace_${ctx.traceId}__${input.question.slice(0, 30).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "")}`,
+                id: null,
+            },
         };
-        writeFileSync(resolve(artifactsDir, "notebooklm_metadata.json"), JSON.stringify(metadata, null, 2) + "\n", "utf-8");
 
         console.log(`     ├─ ✓ Output: answer=${output.answer.length} chars, ${output.citations.length} citations`);
-        console.log(`     ├─ 📋 Metadata: notebooklm_metadata.json (${Object.keys(externalLinks).length} links)`);
         console.log(`     ├─ 📁 Artifacts: ${artifactsDir}`);
 
         return output;

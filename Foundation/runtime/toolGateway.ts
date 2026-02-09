@@ -135,6 +135,12 @@ export async function callTool(
     console.log(`     ├─ Driver: ${driver.name}`);
     const output = await driver.execute(input as Parameters<typeof driver.execute>[0], driverCtx);
 
+    // ── Extract _driverMeta before contract validation ───────────────────
+    // _driverMeta is in-memory only — it flows to handleReport but must not
+    // be validated against the output schema (which has additionalProperties: false).
+    const driverMeta = (output as unknown as Record<string, unknown>)._driverMeta;
+    delete (output as unknown as Record<string, unknown>)._driverMeta;
+
     // ── 5. Output contract validation ────────────────────────────────────
     const outputSchemaPath = resolve(ctx.foundationRoot, "buildings", building, "contracts", "output.schema.json");
     const outputValidator = getValidator(outputSchemaPath);
@@ -152,6 +158,11 @@ export async function callTool(
         });
         ctx.trace.emit(errEvent);
         throw new Error(`[toolGateway] Output contract violation from "${toolName}" (driver=${driverName}): ${errMsg}`);
+    }
+
+    // Reattach _driverMeta after validation (handleReport needs it)
+    if (driverMeta !== undefined) {
+        (output as unknown as Record<string, unknown>)._driverMeta = driverMeta;
     }
 
     // ── 6. Trace emission ────────────────────────────────────────────────
