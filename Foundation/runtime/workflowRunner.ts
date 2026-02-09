@@ -3,17 +3,18 @@
  *
  * Loads a workflow, dispatches each step by step_type,
  * wraps execution in run_start / run_end trace events.
+ * Stores artifacts under data/traces/YYYY-MM-DD/<traceId>/.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import _Ajv from "ajv";
 const Ajv = _Ajv as unknown as typeof _Ajv.default;
 import { createTrace, buildEvent, type TraceHandle, type AgentInfo, type RunInfo } from "./traceLogger.js";
 import { callTool, resetBudgets, type GatewayContext } from "./toolGateway.js";
 import { resolveVersion } from "./registry.js";
+import { initDrivers } from "./drivers/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -49,6 +50,12 @@ export interface CityConfig {
     governance: { policy_mode: string; least_agency: boolean };
 }
 
+export interface RunOptions {
+    driver?: string;
+    question?: string;
+    sources?: string[];
+}
+
 export interface RunResult {
     success: boolean;
     traceFile: string;
@@ -68,7 +75,11 @@ export async function runWorkflow(
     foundationRoot: string,
     workflowPath: string,
     cityConfig: CityConfig,
+    options: RunOptions = {},
 ): Promise<RunResult> {
+    // Initialize drivers
+    await initDrivers();
+
     // Load workflow YAML
     const fullPath = resolve(foundationRoot, workflowPath);
     const wfRaw = readFileSync(fullPath, "utf-8");
@@ -95,16 +106,21 @@ export async function runWorkflow(
     // Reset tool call budgets
     resetBudgets();
 
+    // Derive trace date from filePath (data/traces/YYYY-MM-DD/<traceId>.jsonl)
+    const traceDir = dirname(trace.filePath);
+    const traceDate = traceDir.split(/[/\\]/).pop() ?? new Date().toISOString().slice(0, 10);
+
     // ── Emit run_start ───────────────────────────────────────────────────
     console.log(`\n🏙️  AgentCity — Running workflow: ${wf.workflow.name}`);
     console.log(`   Trace: ${trace.traceId}`);
+    console.log(`   Driver: ${options.driver ?? "mock"}`);
     console.log(`   File:  ${trace.filePath}\n`);
 
     trace.emit(buildEvent(trace.traceId, runInfo, agent, "run_start", {
         step_index: 0,
         step_type: "run_start",
         status: "started",
-        inputs_summary: `workflow=${wf.workflow.name} env=${cityConfig.environment}`,
+        inputs_summary: `workflow=${wf.workflow.name} env=${cityConfig.environment} driver=${options.driver ?? "mock"}`,
         outputs_summary: "",
     }));
 
@@ -124,13 +140,13 @@ export async function runWorkflow(
                     await handleStepStart(i, step, trace, runInfo, agent);
                     break;
                 case "tool_call":
-                    output = await handleToolCall(i, step, trace, runInfo, agent, foundationRoot, cityConfig);
+                    output = await handleToolCall(i, step, trace, runInfo, agent, foundationRoot, cityConfig, options, traceDate);
                     break;
                 case "verify":
                     await handleVerify(i, step, trace, runInfo, agent, foundationRoot, output);
                     break;
                 case "report":
-                    await handleReport(i, step, trace, runInfo, agent, output);
+                    await handleReport(i, step, trace, runInfo, agent, output, foundationRoot, trace.traceId, traceDate);
                     break;
                 case "step_end":
                     await handleStepEnd(i, step, trace, runInfo, agent);
@@ -224,6 +240,7 @@ async function handleToolCall(
     index: number, step: WorkflowStep,
     trace: TraceHandle, runInfo: RunInfo, agent: AgentInfo,
     foundationRoot: string, cityConfig: CityConfig,
+    options: RunOptions, traceDate: string,
 ): Promise<unknown> {
     console.log(`   → [${index}] tool_call: ${step.name} → ${step.tool}`);
 
@@ -234,17 +251,18 @@ async function handleToolCall(
     const resolved = resolveVersion(foundationRoot, step.building);
     console.log(`     ├─ Resolved ${step.building}@${resolved.version}`);
 
-    // Load SOP for context (informational in v1)
+    // Load SOP for context
     if (step.sop_path) {
         const sopFull = resolve(foundationRoot, step.sop_path);
         const sop = parseYaml(readFileSync(sopFull, "utf-8"));
         console.log(`     ├─ SOP loaded: ${(sop as Record<string, unknown>)?.sop ?? step.sop_path}`);
     }
 
-    // Build mock input matching input.schema.json
-    const mockInput = {
-        sources: ["VerseRidge_Overview.pdf", "AgentOps_Design_Brief.md"],
-        question: "What are the key principles of the AgentCity governance model?",
+    // Build tool input from RunOptions (driver is part of input — traceable)
+    const toolInput = {
+        sources: options.sources ?? ["VerseRidge_Overview.pdf", "AgentOps_Design_Brief.md"],
+        question: options.question ?? "What are the key principles of the AgentCity governance model?",
+        driver: options.driver ?? "mock",
         constraints: {
             max_words: 500,
             require_citations: true,
@@ -262,9 +280,11 @@ async function handleToolCall(
             max_tool_calls: cityConfig.defaults.budgets.max_tool_calls,
             timeout_seconds: cityConfig.defaults.budgets.timeout_seconds,
         },
+        traceDate,
+        sopPath: step.sop_path,
     };
 
-    const result = await callTool(step.tool, mockInput, gatewayCtx);
+    const result = await callTool(step.tool, toolInput, gatewayCtx);
     console.log(`     └─ Tool call succeeded`);
     return result;
 }
@@ -322,12 +342,52 @@ async function handleReport(
     index: number, step: WorkflowStep,
     trace: TraceHandle, runInfo: RunInfo, agent: AgentInfo,
     output: unknown,
+    foundationRoot: string, traceId: string, traceDate: string,
 ): Promise<void> {
     console.log(`   → [${index}] report: ${step.name}`);
 
     const summary = output
         ? `output_keys=${Object.keys(output as Record<string, unknown>).join(",")}`
         : "no output";
+
+    // ── Store artifacts under trace folder ─────────────────────────────
+    const artifactsDir = resolve(foundationRoot, "data", "traces", traceDate, traceId, "artifacts");
+    mkdirSync(artifactsDir, { recursive: true });
+
+    // output.json
+    writeFileSync(
+        resolve(artifactsDir, "output.json"),
+        JSON.stringify(output, null, 2) + "\n",
+        "utf-8",
+    );
+
+    // summary.md
+    const typedOutput = output as Record<string, unknown> | null;
+    const summaryMd = [
+        `# Run Summary`,
+        ``,
+        `- **Trace ID**: ${traceId}`,
+        `- **Date**: ${traceDate}`,
+        `- **Status**: succeeded`,
+        ``,
+        `## Answer`,
+        ``,
+        String(typedOutput?.answer ?? "(no answer)"),
+        ``,
+        `## Citations`,
+        ``,
+        ...((typedOutput?.citations as Array<{ source: string; locator: string }>) ?? []).map(
+            (c) => `- **${c.source}** — ${c.locator}`,
+        ),
+        ``,
+        typedOutput?.limits ? `## Limits\n\n${typedOutput.limits}\n` : "",
+    ].join("\n");
+
+    const summaryPath = resolve(foundationRoot, "data", "traces", traceDate, `${traceId}.summary.md`);
+    writeFileSync(summaryPath, summaryMd, "utf-8");
+
+    console.log(`     ├─ 📁 Artifact: ${artifactsDir}/output.json`);
+    console.log(`     ├─ 📝 Summary: ${summaryPath}`);
 
     trace.emit(buildEvent(trace.traceId, runInfo, agent, "step_end", {
         step_index: index,

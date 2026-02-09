@@ -16,6 +16,14 @@
             "type": "string",
             "minLength": 3
         },
+        "driver": {
+            "type": "string",
+            "enum": [
+                "mock",
+                "autopilot"
+            ],
+            "description": "Execution driver. mock = deterministic stub, autopilot = notebook-booster."
+        },
         "constraints": {
             "type": "object",
             "properties": {

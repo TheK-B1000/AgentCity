@@ -5,7 +5,7 @@
  *   1. Allowlist check
  *   2. Input contract validation
  *   3. Budget check
- *   4. Execute (v1: mock adapters)
+ *   4. Driver dispatch (reads input.driver ?? defaultForEnv)
  *   5. Output contract validation
  *   6. Trace emission
  */
@@ -16,6 +16,7 @@ import _Ajv, { type ValidateFunction } from "ajv";
 const Ajv = _Ajv as unknown as typeof _Ajv.default;
 import { parse as parseYaml } from "yaml";
 import { buildEvent, type TraceHandle, type AgentInfo, type RunInfo } from "./traceLogger.js";
+import { getDriver, type DriverContext } from "./drivers/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -27,6 +28,8 @@ export interface GatewayContext {
     runInfo: RunInfo;
     stepIndex: number;
     budgets: { max_tool_calls: number; timeout_seconds: number };
+    traceDate: string;
+    sopPath?: string;
 }
 
 interface AllowlistPolicy {
@@ -50,7 +53,7 @@ export function resetBudgets(): void {
 
 /**
  * The one front door for tool calls.
- * Returns the validated output from the tool adapter.
+ * Driver selection: reads input.driver ?? "mock" (default).
  */
 export async function callTool(
     toolName: string,
@@ -79,7 +82,6 @@ export async function callTool(
     }
 
     // ── 2. Input contract validation ─────────────────────────────────────
-    // Derive contract path from the building associated with the tool
     const building = toolName.split(".")[1]; // tool.<building>.run → <building>
     const inputSchemaPath = resolve(ctx.foundationRoot, "buildings", building, "contracts", "input.schema.json");
     const inputValidator = getValidator(inputSchemaPath);
@@ -115,8 +117,23 @@ export async function callTool(
         throw new Error(`[toolGateway] Budget exceeded: ${toolCallCount} calls > max ${ctx.budgets.max_tool_calls}.`);
     }
 
-    // ── 4. Execute adapter (v1: mock) ────────────────────────────────────
-    const output = await executeAdapter(toolName, input, ctx);
+    // ── 4. Driver dispatch ────────────────────────────────────────────────
+    // Driver selection is part of the tool input (traceable, reproducible)
+    const typedInput = input as { driver?: string };
+    const driverName = typedInput.driver ?? "mock";
+    const driver = getDriver(driverName);
+
+    const driverCtx: DriverContext = {
+        foundationRoot: ctx.foundationRoot,
+        environment: ctx.environment,
+        traceId: ctx.trace.traceId,
+        traceDate: ctx.traceDate,
+        runId: ctx.runInfo.run_id,
+        sopPath: ctx.sopPath,
+    };
+
+    console.log(`     ├─ Driver: ${driver.name}`);
+    const output = await driver.execute(input as Parameters<typeof driver.execute>[0], driverCtx);
 
     // ── 5. Output contract validation ────────────────────────────────────
     const outputSchemaPath = resolve(ctx.foundationRoot, "buildings", building, "contracts", "output.schema.json");
@@ -128,13 +145,13 @@ export async function callTool(
             step_index: ctx.stepIndex,
             step_type: "tool_call",
             status: "failed",
-            inputs_summary: `tool=${toolName}`,
+            inputs_summary: `tool=${toolName} driver=${driverName}`,
             outputs_summary: errMsg,
         }, {
             errors: [{ code: "OUTPUT_CONTRACT_VIOLATION", message: errMsg }],
         });
         ctx.trace.emit(errEvent);
-        throw new Error(`[toolGateway] Output contract violation from "${toolName}": ${errMsg}`);
+        throw new Error(`[toolGateway] Output contract violation from "${toolName}" (driver=${driverName}): ${errMsg}`);
     }
 
     // ── 6. Trace emission ────────────────────────────────────────────────
@@ -143,46 +160,16 @@ export async function callTool(
         step_index: ctx.stepIndex,
         step_type: "tool_call",
         status: "succeeded",
-        inputs_summary: `tool=${toolName}`,
-        outputs_summary: `answer=${(output as Record<string, unknown>)?.answer ? "present" : "missing"}`,
+        inputs_summary: `tool=${toolName} driver=${driverName}`,
+        outputs_summary: `answer=${(output as unknown as Record<string, unknown>)?.answer ? "present" : "missing"}`,
     }, {
         duration_ms: durationMs,
-        tool: { name: toolName, call_index: toolCallCount, cache_hit: false },
+        tool: { name: toolName, driver: driverName, call_index: toolCallCount, cache_hit: false },
         security: { allowlist_check: "passed", input_contract: "passed", output_contract: "passed" },
     });
     ctx.trace.emit(toolEvent);
 
     return output;
-}
-
-// ── Adapters (v1: mock/stub) ───────────────────────────────────────────
-
-/**
- * v1 adapter dispatcher — returns mock output matching the output contract.
- * In v2+ this will dispatch to real tool implementations.
- */
-async function executeAdapter(
-    toolName: string,
-    input: unknown,
-    _ctx: GatewayContext,
-): Promise<unknown> {
-    const typedInput = input as { question?: string; sources?: string[] };
-
-    if (toolName === "tool.notebooklm.run") {
-        // Simulated NotebookLM response matching output.schema.json
-        return {
-            answer: `[Mock] Based on the provided sources, here is a synthesized answer to: "${typedInput.question ?? "(no question)"}".\n\nThis is a stub response from the v1 adapter. In production, this would be the actual NotebookLM output grounded in the ${typedInput.sources?.length ?? 0} provided source(s).`,
-            citations: [
-                {
-                    source: typedInput.sources?.[0] ?? "unknown_source.pdf",
-                    locator: "p.1, section 'Overview'",
-                },
-            ],
-            limits: "This is a mock response — no actual source analysis was performed.",
-        };
-    }
-
-    throw new Error(`[toolGateway] No adapter registered for tool "${toolName}".`);
 }
 
 // ── Internal Helpers ───────────────────────────────────────────────────

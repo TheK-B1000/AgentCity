@@ -2,17 +2,18 @@
  * cli.ts — AgentCity CLI entry point
  *
  * Usage:
- *   npx tsx runtime/cli.ts run <workflow_name>
+ *   npx tsx runtime/cli.ts run <workflow_name> [--driver mock|autopilot] [--question "..."] [--sources "a.pdf,b.md"]
  *   npx tsx runtime/cli.ts register <building> <version>
- *   npx tsx runtime/cli.ts promote <building> <version> <stage>
+ *   npx tsx runtime/cli.ts promote <building> <version> <stage> [--force]
  *   npx tsx runtime/cli.ts rollback <building> <stage>
+ *   npx tsx runtime/cli.ts eval <suite> [--driver mock|autopilot]
  */
 
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { runWorkflow, type CityConfig } from "./workflowRunner.js";
+import { runWorkflow, type CityConfig, type RunOptions } from "./workflowRunner.js";
 import { register, promote, rollback, resolveVersion, type Stage } from "./registry.js";
 
 // ── Resolve Foundation root ────────────────────────────────────────────
@@ -29,6 +30,18 @@ function loadCityConfig(): CityConfig {
     return parseYaml(raw) as CityConfig;
 }
 
+// ── Flag parser ────────────────────────────────────────────────────────
+
+function getFlag(args: string[], flag: string): string | undefined {
+    const idx = args.indexOf(flag);
+    if (idx === -1 || idx + 1 >= args.length) return undefined;
+    return args[idx + 1];
+}
+
+function hasFlag(args: string[], flag: string): boolean {
+    return args.includes(flag);
+}
+
 // ── CLI Router ─────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -43,15 +56,21 @@ async function main(): Promise<void> {
     switch (command) {
         case "run": {
             const workflowName = args[1];
-            if (!workflowName) {
-                console.error("Usage: ag run <workflow_name>");
+            if (!workflowName || workflowName.startsWith("--")) {
+                console.error("Usage: ag run <workflow_name> [--driver mock|autopilot] [--question \"...\"] [--sources \"a.pdf,b.md\"]");
                 process.exit(1);
             }
 
             const cityConfig = loadCityConfig();
             const workflowPath = `city/workflows/${workflowName}.yaml`;
 
-            const result = await runWorkflow(FOUNDATION_ROOT, workflowPath, cityConfig);
+            const options: RunOptions = {
+                driver: getFlag(args, "--driver") ?? "mock",
+                question: getFlag(args, "--question"),
+                sources: getFlag(args, "--sources")?.split(",").map((s) => s.trim()),
+            };
+
+            const result = await runWorkflow(FOUNDATION_ROOT, workflowPath, cityConfig, options);
 
             console.log("── Run Summary ──────────────────────────────────");
             console.log(`   Success:  ${result.success}`);
@@ -68,6 +87,30 @@ async function main(): Promise<void> {
             }
 
             process.exit(result.success ? 0 : 1);
+            break;
+        }
+
+        case "eval": {
+            const suiteName = args[1];
+            if (!suiteName) {
+                console.error("Usage: ag eval <suite_name> [--driver mock|autopilot]");
+                process.exit(1);
+            }
+
+            const driver = getFlag(args, "--driver") ?? "mock";
+            const suitePath = resolve(FOUNDATION_ROOT, "evals", `${suiteName}.ts`);
+
+            console.log(`\n🧪 AgentCity Eval — Suite: ${suiteName} (driver: ${driver})\n`);
+
+            // Dynamically import and run the eval suite
+            try {
+                const suite = await import(pathToFileURL(suitePath).href);
+                const exitCode = await suite.run(FOUNDATION_ROOT, driver);
+                process.exit(exitCode);
+            } catch (err) {
+                console.error(`Failed to load eval suite "${suiteName}":`, err);
+                process.exit(1);
+            }
             break;
         }
 
@@ -91,7 +134,7 @@ async function main(): Promise<void> {
             const building = args[1];
             const version = args[2];
             const stage = args[3] as Stage;
-            const force = args.includes("--force");
+            const force = hasFlag(args, "--force");
 
             if (!building || !version || !stage) {
                 console.error("Usage: ag promote <building> <version> <stage> [--force]");
@@ -142,12 +185,14 @@ function printUsage(): void {
 🏙️  AgentCity CLI (ag)
 
 Commands:
-  run <workflow>                      Run a workflow
-  register <building> <version>       Register a building version
+  run <workflow> [--driver mock|autopilot] [--question "..."] [--sources "a.pdf,b.md"]
+                                        Run a workflow
+  eval <suite> [--driver mock|autopilot] Run an eval suite
+  register <building> <version>         Register a building version
   promote <building> <version> <stage> [--force]
-                                      Promote a version to a stage
-  rollback <building> <stage>         Rollback a stage to previous version
-  resolve <building> [stage]          Show current version for a building
+                                        Promote a version to a stage
+  rollback <building> <stage>           Rollback a stage to previous version
+  resolve <building> [stage]            Show current version for a building
 `);
 }
 

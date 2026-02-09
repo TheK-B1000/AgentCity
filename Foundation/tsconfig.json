@@ -18,7 +18,8 @@
         "sourceMap": true
     },
     "include": [
-        "runtime/**/*.ts"
+        "runtime/**/*.ts",
+        "evals/**/*.ts"
     ],
     "exclude": [
         "node_modules",
