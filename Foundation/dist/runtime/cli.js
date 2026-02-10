@@ -35,9 +35,7 @@ function hasFlag(args, flag) {
     return args.includes(flag);
 }
 // ── CLI Router ─────────────────────────────────────────────────────────
-import { writeFileSync } from "node:fs";
 async function main() {
-    writeFileSync("cli_debug.txt", `CLI Executing at ${new Date().toISOString()}\n`);
     const args = process.argv.slice(2);
     const command = args[0];
     if (!command) {
