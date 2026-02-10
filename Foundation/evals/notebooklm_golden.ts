@@ -101,14 +101,20 @@ export async function run(foundationRoot: string, driver: string): Promise<numbe
     // ── Check 6: Artifact files stored ─────────────────────────────────
     const traceDir = resolve(result.traceFile, "..");
     const traceId = result.traceId;
-    const artifactDir = resolve(traceDir, traceId, "artifacts");
-    const outputJsonExists = existsSync(resolve(artifactDir, "output.json"));
+    // result.traceFile is like .../data/traces/YYYY-MM-DD/ID.jsonl
+    // traceDir is .../data/traces/YYYY-MM-DD
+    // artifacts are in .../data/traces/YYYY-MM-DD/ID/artifacts
+    const artifactsDir = resolve(traceDir, traceId, "artifacts");
+
+    const outputJsonExists = existsSync(resolve(artifactsDir, "output.json"));
     const summaryMdPath = resolve(traceDir, `${traceId}.summary.md`);
     const summaryExists = existsSync(summaryMdPath);
+    const metadataExists = existsSync(resolve(artifactsDir, "notebooklm_metadata.json"));
+
     checks.push({
         name: "artifacts_stored",
-        pass: outputJsonExists && summaryExists,
-        detail: `output.json=${outputJsonExists ? "✓" : "✗"} summary.md=${summaryExists ? "✓" : "✗"}`,
+        pass: outputJsonExists && summaryExists && metadataExists,
+        detail: `output.json=${outputJsonExists ? "✓" : "✗"} summary.md=${summaryExists ? "✓" : "✗"} metadata=${metadataExists ? "✓" : "✗"}`,
     });
 
     // ── Driver-specific checks ─────────────────────────────────────────

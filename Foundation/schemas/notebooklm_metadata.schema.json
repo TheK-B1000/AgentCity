@@ -1,0 +1,130 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "NotebookLM Canonical Metadata",
+    "type": "object",
+    "required": [
+        "building",
+        "building_version",
+        "driver",
+        "notebook",
+        "links"
+    ],
+    "properties": {
+        "building": {
+            "type": "string"
+        },
+        "building_version": {
+            "type": "string"
+        },
+        "driver": {
+            "type": "string"
+        },
+        "notebook": {
+            "type": "object",
+            "required": [
+                "title"
+            ],
+            "properties": {
+                "title": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "id": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            }
+        },
+        "external_records": {
+            "type": "object",
+            "additionalProperties": {
+                "oneOf": [
+                    {
+                        "type": "string"
+                    },
+                    {
+                        "type": "object",
+                        "required": [
+                            "path",
+                            "status"
+                        ],
+                        "properties": {
+                            "path": {
+                                "type": "null"
+                            },
+                            "status": {
+                                "const": "missing"
+                            },
+                            "expected_from": {
+                                "type": "string"
+                            },
+                            "note": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        "links": {
+            "type": "object",
+            "required": [
+                "output_json",
+                "trace_jsonl",
+                "summary_md"
+            ],
+            "properties": {
+                "output_json": {
+                    "type": "string"
+                },
+                "trace_jsonl": {
+                    "type": "string"
+                },
+                "summary_md": {
+                    "type": "string"
+                }
+            }
+        },
+        "conflicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "field",
+                    "producer",
+                    "run",
+                    "resolution"
+                ],
+                "properties": {
+                    "field": {
+                        "type": "string"
+                    },
+                    "producer": {},
+                    "run": {},
+                    "resolution": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "status": {
+            "type": "string"
+        },
+        "reason": {
+            "type": "string"
+        },
+        "sop": {
+            "type": "string"
+        },
+        "sop_version": {
+            "type": [
+                "string",
+                "number"
+            ]
+        }
+    }
+}

@@ -317,3 +317,26 @@ Constitution changes must:
 * output verification
 * registry promotion + rollback readiness
 
+
+## 13) Metadata Merge Precedence
+
+**Producer-owned (Driver/Building) fields**
+Authored by the building execution layer and should not be overwritten by workflow defaults:
+* `driver`
+* `notebook`
+* `sop`, `sop_version`
+* `external_records.*` (External Records District is producer-owned)
+
+**Run-owned (Workflow/City) fields**
+Authored by the runtime container (the city):
+* `links.*` (trace_jsonl, summary_md, output_json, etc.)
+* `building`, `building_version`
+* (optional if present) `run_id`, `trace_id`, `environment`, `workflow`
+
+### Conflict Resolution Rules
+
+If both producer and run provide the same leaf key:
+1. If one value is `null` and the other non-null → choose non-null (no conflict)
+2. If both values are identical → keep value (no conflict)
+3. If both values differ and both non-null → choose by ownership precedence and record a conflict entry.
+

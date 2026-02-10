@@ -9,7 +9,7 @@
  *   npx tsx runtime/cli.ts eval <suite> [--driver mock|autopilot]
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -173,6 +173,16 @@ async function main(): Promise<void> {
             break;
         }
 
+        case "audit": {
+            const traceId = args[1];
+            if (!traceId) {
+                console.error("Usage: ag audit <trace_id>");
+                process.exit(1);
+            }
+            await auditTrace(FOUNDATION_ROOT, traceId);
+            break;
+        }
+
         default:
             console.error(`Unknown command: "${command}"`);
             printUsage();
@@ -188,6 +198,7 @@ Commands:
   run <workflow> [--driver mock|autopilot] [--question "..."] [--sources "a.pdf,b.md"]
                                         Run a workflow
   eval <suite> [--driver mock|autopilot] Run an eval suite
+  audit <trace_id>                      Audit a trace for integrity
   register <building> <version>         Register a building version
   promote <building> <version> <stage> [--force]
                                         Promote a version to a stage
@@ -196,9 +207,88 @@ Commands:
 `);
 }
 
-// ── Entry ──────────────────────────────────────────────────────────────
+// ── Audit Logic ────────────────────────────────────────────────────────
 
-main().catch((err) => {
-    console.error("Fatal error:", err);
-    process.exit(1);
-});
+async function auditTrace(root: string, traceId: string): Promise<void> {
+    console.log(`\n🔍 Auditing Trace: ${traceId}`);
+
+    // 1. Find the trace file (it's in YYYY-MM-DD folder, but which one?)
+    // We search all date folders in data/traces
+    const tracesRoot = resolve(root, "data", "traces");
+    if (!existsSync(tracesRoot)) {
+        console.error("❌ data/traces directory not found.");
+        process.exit(1);
+    }
+
+    let tracePath: string | null = null;
+    let traceDate: string | null = null;
+
+    const dates = readdirSync(tracesRoot).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    for (const date of dates) {
+        const candidate = resolve(tracesRoot, date, `${traceId}.jsonl`);
+        if (existsSync(candidate)) {
+            tracePath = candidate;
+            traceDate = date;
+            break;
+        }
+    }
+
+    if (!tracePath || !traceDate) {
+        console.error(`❌ Trace file not found for ID ${traceId}`);
+        process.exit(1);
+    }
+    console.log(`   ✓ Found trace file: data/traces/${traceDate}/${traceId}.jsonl`);
+
+    // 2. Check Artifacts Folder
+    const artifactsDir = resolve(tracesRoot, traceDate, traceId, "artifacts");
+    if (!existsSync(artifactsDir)) {
+        console.error(`❌ Artifacts folder missing: ${artifactsDir}`);
+        process.exit(1);
+    }
+    console.log(`   ✓ Found artifacts folder`);
+
+    // 3. Check Canonical Metadata
+    const metaPath = resolve(artifactsDir, "notebooklm_metadata.json");
+    if (!existsSync(metaPath)) {
+        console.error(`❌ notebooklm_metadata.json missing`);
+        process.exit(1);
+    }
+
+    const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    console.log(`   ✓ loaded notebooklm_metadata.json`);
+
+    // Validate Schema (Basic checks)
+    const requiredKeys = ["building", "driver", "notebook", "links"];
+    const missing = requiredKeys.filter(k => !(k in meta));
+    if (missing.length > 0) {
+        console.error(`❌ Metadata missing keys: ${missing.join(", ")}`);
+        process.exit(1);
+    }
+
+    // Check Links
+    const links = meta.links || {};
+    const checks = [
+        { key: "output_json", path: resolve(artifactsDir, "output.json") },
+        // trace_jsonl is relative to artifacts dir? "../ID.jsonl"
+        // resolved: resolve(artifactsDir, meta.links.trace_jsonl)
+        { key: "trace_jsonl", path: resolve(artifactsDir, links.trace_jsonl) },
+        { key: "summary_md", path: resolve(artifactsDir, links.summary_md) }
+    ];
+
+    let linkErrors = 0;
+    for (const { key, path } of checks) {
+        if (!existsSync(path)) {
+            console.error(`❌ Broken link: ${key} -> ${path}`);
+            linkErrors++;
+        } else {
+            console.log(`   ✓ Link verified: ${key}`);
+        }
+    }
+
+    if (linkErrors > 0) {
+        console.error(`\n⛔ Audit FAILED: Broken links`);
+        process.exit(1);
+    }
+
+    console.log(`\n✅ Audit PASSED: Trace ${traceId} is valid.`);
+}

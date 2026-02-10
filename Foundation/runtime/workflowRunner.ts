@@ -1,12 +1,4 @@
-/**
- * workflowRunner.ts — Execute YAML workflow steps for AgentCity
- *
- * Loads a workflow, dispatches each step by step_type,
- * wraps execution in run_start / run_end trace events.
- * Stores artifacts under data/traces/YYYY-MM-DD/<traceId>/.
- */
-
-import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import _Ajv from "ajv";
@@ -14,7 +6,7 @@ const Ajv = _Ajv as unknown as typeof _Ajv.default;
 import { createTrace, buildEvent, type TraceHandle, type AgentInfo, type RunInfo } from "./traceLogger.js";
 import { callTool, resetBudgets, type GatewayContext } from "./toolGateway.js";
 import { resolveVersion } from "./registry.js";
-import { initDrivers } from "./drivers/index.js";
+import { initDrivers, type ToolResult, type ToolInput, type ToolMeta } from "./drivers/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -68,7 +60,7 @@ export interface RunResult {
 
 /** Internal container so handleReport gets both tool output and building info. */
 interface RunOutput {
-    toolOutput: unknown;
+    result: ToolResult<unknown> | null;
     building?: string;
     buildingVersion?: string;
 }
@@ -107,7 +99,7 @@ export async function runWorkflow(
     };
 
     const errors: Array<{ code: string; message: string }> = [];
-    let runOutput: RunOutput = { toolOutput: null };
+    let runOutput: RunOutput = { result: null };
     let stepsExecuted = 0;
 
     // Reset tool call budgets
@@ -150,7 +142,7 @@ export async function runWorkflow(
                     runOutput = await handleToolCall(i, step, trace, runInfo, agent, foundationRoot, cityConfig, options, traceDate);
                     break;
                 case "verify":
-                    await handleVerify(i, step, trace, runInfo, agent, foundationRoot, runOutput.toolOutput);
+                    await handleVerify(i, step, trace, runInfo, agent, foundationRoot, runOutput.result?.payload);
                     break;
                 case "report":
                     await handleReport(i, step, trace, runInfo, agent, runOutput, foundationRoot, trace.traceId, traceDate, options);
@@ -176,6 +168,25 @@ export async function runWorkflow(
             }));
 
             console.error(`   ❌ Step "${step.name}" failed: ${message}`);
+
+            // ── Emergency Artifact Dump (on failure) ─────────────────────
+            // If we have a result but failed later (e.g. verify), we MUST
+            // still write the metadata and output to preserve the run.
+            if (runOutput.result) {
+                console.log("   ⚠️  Attempting emergency artifact dump...");
+                // Use a dummy step for report
+                const emergencyReportStep: WorkflowStep = {
+                    step_type: "report",
+                    name: "emergency_report",
+                    building: step.building
+                };
+                try {
+                    await handleReport(i, emergencyReportStep, trace, runInfo, agent, runOutput, foundationRoot, trace.traceId, traceDate, options);
+                } catch (dumpErr) {
+                    console.error("   ❌ Failed to dump artifacts:", dumpErr);
+                }
+            }
+
             break; // halt on error
         }
     }
@@ -194,8 +205,8 @@ export async function runWorkflow(
 
     trace.close();
 
-    const success = errors.length === 0;
-    if (success) {
+    const resultSuccess = errors.length === 0;
+    if (resultSuccess) {
         console.log(`\n   ✅ Workflow completed successfully.`);
     } else {
         console.log(`\n   ⛔ Workflow completed with errors.`);
@@ -203,11 +214,11 @@ export async function runWorkflow(
     console.log(`   Trace file: ${trace.filePath}\n`);
 
     return {
-        success,
+        success: resultSuccess,
         traceFile: trace.filePath,
         traceId: trace.traceId,
         runId: trace.runId,
-        output: runOutput.toolOutput,
+        output: runOutput.result?.payload,
         stepsExecuted,
         errors,
     };
@@ -267,7 +278,8 @@ async function handleToolCall(
     }
 
     // Build tool input from RunOptions (driver is part of input — traceable)
-    const toolInput = {
+    // We cast to ToolInput, assuming options map correctly
+    const toolInput: ToolInput = {
         sources: options.sources ?? ["VerseRidge_Overview.pdf", "AgentOps_Design_Brief.md"],
         question: options.question ?? "What are the key principles of the AgentCity governance model?",
         driver: options.driver ?? "mock",
@@ -296,7 +308,7 @@ async function handleToolCall(
     console.log(`     └─ Tool call succeeded`);
 
     return {
-        toolOutput: result,
+        result: result as ToolResult<unknown>,
         building: step.building,
         buildingVersion: resolved.version,
     };
@@ -312,6 +324,10 @@ async function handleVerify(
     if (!step.checks || step.checks.length === 0) {
         console.log(`     └─ No checks defined, skipping.`);
         return;
+    }
+
+    if (!output) {
+        throw new Error("Verification failed: No output available to verify.");
     }
 
     for (const check of step.checks) {
@@ -360,7 +376,8 @@ async function handleReport(
 ): Promise<void> {
     console.log(`   → [${index}] report: ${step.name}`);
 
-    const output = runOutput.toolOutput;
+    const result = runOutput.result;
+    const output = result?.payload;
     const summary = output
         ? `output_keys=${Object.keys(output as Record<string, unknown>).join(",")}`
         : "no output";
@@ -369,14 +386,15 @@ async function handleReport(
     const artifactsDir = resolve(foundationRoot, "data", "traces", traceDate, traceId, "artifacts");
     mkdirSync(artifactsDir, { recursive: true });
 
-    // output.json (strip _driverMeta — it's in-memory only)
-    const persistOutput = { ...(output as Record<string, unknown>) };
-    delete persistOutput._driverMeta;
-    writeFileSync(
-        resolve(artifactsDir, "output.json"),
-        JSON.stringify(persistOutput, null, 2) + "\n",
-        "utf-8",
-    );
+    // output.json
+    // We write the payload as the official output.json
+    if (output) {
+        writeFileSync(
+            resolve(artifactsDir, "output.json"),
+            JSON.stringify(output, null, 2) + "\n",
+            "utf-8",
+        );
+    }
 
     // summary.md
     const typedOutput = output as Record<string, unknown> | null;
@@ -403,30 +421,53 @@ async function handleReport(
     const summaryPath = resolve(foundationRoot, "data", "traces", traceDate, `${traceId}.summary.md`);
     writeFileSync(summaryPath, summaryMd, "utf-8");
 
-    // ── Copy external records (immutable snapshots) ───────────────────
-    const externalRecords = copyAndSnapshotExternalRecords(foundationRoot, artifactsDir);
+    // ── Build Canonical Metadata (Merge) ────────────────────────────────
 
-    // ── Write SINGLE CANONICAL notebooklm_metadata.json ──────────────
-    // One file. One truth. Merges driver meta + external records + links.
-    const driverMeta = (typedOutput as Record<string, unknown> | null)?._driverMeta as Record<string, unknown> | undefined;
+    // 1. Producer-owned fields (from driver)
+    const producerMeta = result?.meta || { driver: "unknown", notebook: { title: null, id: null } };
 
-    const canonicalMetadata = {
+    // 2. Run-owned fields (from workflow/city)
+    const runMeta: ToolMeta = {
+        driver: options.driver ?? "mock", // Defaults, but should be overridden by producer if present
         building: runOutput.building ?? "notebooklm",
         building_version: runOutput.buildingVersion ?? "unknown",
-        driver: driverMeta?.driver ?? options.driver ?? "mock",
-        notebook: driverMeta?.notebook ?? { title: null, id: null },
-        external_records: externalRecords,
         links: {
             output_json: "artifacts/output.json",
             trace_jsonl: `../${traceId}.jsonl`,
             summary_md: `../${traceId}.summary.md`,
         },
+        notebook: { title: null, id: null }, // Required by interface
     };
 
-    const metadataPath = resolve(artifactsDir, "notebooklm_metadata.json");
-    writeFileSync(metadataPath, JSON.stringify(canonicalMetadata, null, 2) + "\n", "utf-8");
+    // 3. Merge with Conflict Detection
+    const { merged, conflicts } = mergeMetadata(producerMeta as ToolMeta, runMeta);
 
-    const foundCount = Object.values(externalRecords).filter((v) => typeof v === "string").length;
+    // 4. Write canonical metadata
+    if (conflicts.length > 0) {
+        merged.conflicts = conflicts;
+        console.warn(`     ⚠️  Metadata conflicts detected: ${conflicts.length}`);
+    }
+
+    // Validate Schema (v1 schema check)
+    // We ideally should validate against notebooklm_metadata.schema.json here.
+    const schemaPath = resolve(foundationRoot, "schemas", "notebooklm_metadata.schema.json");
+    if (existsSync(schemaPath)) {
+        const schema = JSON.parse(readFileSync(schemaPath, "utf-8"));
+        const ajv = new Ajv({ allErrors: true, strict: false });
+        const validate = ajv.compile(schema);
+        if (!validate(merged)) {
+            console.warn("     ⚠️  Canonical Metadata failed schema validation:", validate.errors);
+            merged.status = "schema_invalid";
+        }
+    }
+
+    const metadataPath = resolve(artifactsDir, "notebooklm_metadata.json");
+    writeFileSync(metadataPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+
+    // Count external records from the merged metadata
+    const extRecords = merged.external_records as Record<string, unknown> | undefined;
+    const foundCount = extRecords ? Object.values(extRecords).filter((v) => typeof v === "string").length : 0;
+
     console.log(`     ├─ 📁 Artifact: ${artifactsDir}/output.json`);
     console.log(`     ├─ 📝 Summary: ${summaryPath}`);
     console.log(`     ├─ 📋 Metadata (canonical): notebooklm_metadata.json (${foundCount} external records)`);
@@ -442,81 +483,77 @@ async function handleReport(
     console.log(`     └─ Report recorded: ${summary}`);
 }
 
-// ── External Records Copier ────────────────────────────────────────────
+// ── Metadata Merge Logic ───────────────────────────────────────────────
 
-/** Present files → path string. Missing files → structured reason. */
-type ExternalRecordEntry = string | {
-    path: null;
-    status: "missing";
-    expected_from: string;
-    note: string;
-};
-
-interface KnownFile {
-    file: string;
-    key: string;
-    expected_from: string;
-    note_if_missing: string;
+interface MergeResult {
+    merged: any;
+    conflicts: any[];
 }
 
-/**
- * Copy known external briefs into trace artifacts. External files can change
- * later — the copy makes the run immutable. Missing files get structured null
- * so old traces are self-documenting.
- */
-function copyAndSnapshotExternalRecords(
-    foundationRoot: string,
-    artifactsDir: string,
-): Record<string, ExternalRecordEntry> {
-    const docsRoot = resolve(foundationRoot, "..", "VerseRidge Corporate", ".agent", "docs");
-    const externalDir = resolve(artifactsDir, "external_records");
-    mkdirSync(externalDir, { recursive: true });
+function mergeMetadata(producer: ToolMeta, run: ToolMeta): MergeResult {
+    const conflicts: any[] = [];
+    const merged: any = { ...run }; // Start with run as baseline
 
-    const knownFiles: KnownFile[] = [
-        {
-            file: "context_brief.json",
-            key: "context_brief_json",
-            expected_from: "notebook-booster",
-            note_if_missing: "notebook-booster has not produced context_brief.json yet",
-        },
-        {
-            file: "context_brief.md",
-            key: "context_brief_md",
-            expected_from: "notebook-booster",
-            note_if_missing: "notebook-booster has not produced context_brief.md yet",
-        },
-        {
-            file: "ultimate_agent_brief.md",
-            key: "ultimate_agent_brief",
-            expected_from: "agent docs",
-            note_if_missing: "VerseRidge Corporate/.agent/docs/ultimate_agent_brief.md not found",
-        },
-        {
-            file: "master_agentic_context.md",
-            key: "master_agentic_context",
-            expected_from: "agent docs",
-            note_if_missing: "VerseRidge Corporate/.agent/docs/master_agentic_context.md not found",
-        },
-    ];
+    // Producer overrides Run for producer-owned fields
+    const producerOwnedKeys = ["driver", "notebook", "sop", "sop_version", "external_records"];
 
-    const records: Record<string, ExternalRecordEntry> = {};
+    // We iterate over all keys in Producer and Run to find conflicts
+    const allKeys = new Set([...Object.keys(producer), ...Object.keys(run)]);
 
-    for (const { file, key, expected_from, note_if_missing } of knownFiles) {
-        const srcPath = resolve(docsRoot, file);
-        if (existsSync(srcPath)) {
-            const dest = resolve(externalDir, file);
-            copyFileSync(srcPath, dest);
-            records[key] = `artifacts/external_records/${file}`;
-            console.log(`     ├─ 📥 Copied ${file} (immutable snapshot)`);
+    for (const key of allKeys) {
+        const prodVal = producer[key];
+        const runVal = run[key];
+
+        // Case 1: Only in one side
+        if (prodVal === undefined) {
+            merged[key] = runVal;
+            continue;
+        }
+        if (runVal === undefined) {
+            merged[key] = prodVal;
+            continue;
+        }
+
+        // Case 2: Identical (no conflict)
+        if (JSON.stringify(prodVal) === JSON.stringify(runVal)) {
+            merged[key] = prodVal;
+            continue;
+        }
+
+        // Case 3: Both non-null, different values -> Conflict
+        // Resolution: Check ownership
+        if (producerOwnedKeys.includes(key)) {
+            merged[key] = prodVal; // Producer wins
+            conflicts.push({
+                field: key,
+                producer: prodVal,
+                run: runVal,
+                resolution: "producer"
+            });
         } else {
-            records[key] = {
-                path: null,
-                status: "missing",
-                expected_from,
-                note: note_if_missing,
-            };
+            // Run wins (default)
+            const runOwnedKeys = ["links", "building", "building_version", "run_id", "trace_id", "environment", "workflow"];
+
+            if (runOwnedKeys.includes(key)) {
+                merged[key] = runVal;
+                conflicts.push({
+                    field: key,
+                    producer: prodVal,
+                    run: runVal,
+                    resolution: "run"
+                });
+            } else {
+                // Unknown key? default to producer?
+                merged[key] = prodVal;
+                conflicts.push({
+                    field: key,
+                    producer: prodVal,
+                    run: runVal,
+                    resolution: "producer (unknown_key)"
+                });
+            }
         }
     }
 
-    return records;
+    return { merged, conflicts };
 }
