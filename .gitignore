@@ -1,2 +1,33 @@
+# Dependencies
+node_modules/
+package-lock.json
+npm-debug.log
+yarn-error.log
+
+# Build Outputs
+dist/
+build/
+coverage/
+
+# Environment Variables
+.env
+.env.local
+
+# IDE Settings
+.vscode/
+.idea/
+
+# OS Files
+Thumbs.db
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Project Specific
 /Foundation/data
 data/
+output/raw/
+output/processed/
+output/final/

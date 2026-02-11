@@ -1,0 +1,23 @@
+{
+  "name": "video-researcher",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "ingest": "tsx scripts/ingest.ts",
+    "process": "tsx scripts/process.ts",
+    "review": "tsx scripts/review.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^25.2.3",
+    "dotenv": "^17.2.4",
+    "googleapis": "^171.4.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "youtube-transcript": "^1.2.1"
+  }
+}

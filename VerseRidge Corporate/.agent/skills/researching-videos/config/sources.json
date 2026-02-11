@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "name": "Trusted Sources",
+  "description": "A list of vetted YouTube channels and playlists for training data ingestion.",
+  "sources": [
+    {
+      "id": "UC_placeholder",
+      "name": "Example Trusted Channel",
+      "trustScore": 0.9,
+      "tags": ["AI", "Engineering", "Tutorial"],
+      "playlistId": "PL_placeholder"
+    }
+  ]
+}
